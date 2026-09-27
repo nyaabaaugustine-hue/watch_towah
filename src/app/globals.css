@@ -2,20 +2,62 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    color-scheme: light;
+  }
+
+  html {
+    /* Prevents iOS rubber-band revealing a white gap under the app shell. */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-ink-canvas text-ink font-sans antialiased;
+    /* Respect users who ask the OS to stop animating things. */
+    @media (prefers-reduced-motion: reduce) {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* The SOS control is a large, slow, deliberate target. Give it a solid
+     presence rather than the thin OS default. */
+  button {
+    @apply touch-manipulation select-none;
+  }
+
+  /* Focus must be unmistakable for keyboard users without adding visual noise
+     to the touch layout. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-watchtower-500 ring-offset-2 ring-offset-ink-canvas;
   }
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  /* Full-bleed phone shell. max-w-md keeps the dashboard readable on tablets
+     and desktop rather than stretching controls across a 27" monitor. */
+  .app-shell {
+    @apply mx-auto w-full max-w-md min-h-dvh;
+  }
+
+  .safe-area-top {
+    padding-top: max(1rem, env(safe-area-inset-top));
+  }
+
+  .safe-area-bottom {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  /* Ghana flag hairline. Identity cue used once per screen at most. */
+  .ghana-rule {
+    @apply h-1 w-full rounded-pill bg-ghana-stripe;
+  }
+}
+
+@layer utilities {
+  /* Only render while a live incident is broadcasting. */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
 }

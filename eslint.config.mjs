@@ -10,6 +10,11 @@ const compat = new FlatCompat({
 });
 
 const eslintConfig = [
+  {
+    // `next-env.d.ts` is rewritten by the Next.js build on every run, so lint
+    // findings in it are not actionable and disappear the next `next dev`.
+    ignores: [".next/**", "node_modules/**", "drizzle/**", "next-env.d.ts", "public/sw.js", "public/swe-worker-*.js"],
+  },
   ...compat.extends("next/core-web-vitals", "next/typescript"),
 ];
 
