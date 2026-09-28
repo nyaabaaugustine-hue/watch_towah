@@ -23,6 +23,32 @@ export const maxDuration = 60;
 const BEARER_PREFIX = /^bearer\s+/i;
 
 /**
+ * SAFETY SWEEP — runs once daily on the Vercel Hobby plan.
+ *
+ * Read this before changing the schedule. This endpoint is the *only* thing
+ * that escalates overdue journeys, and it is also the only thing that deletes
+ * expired location breadcrumbs. On Hobby it fires at 03:00 UTC once a day, so
+ * the worst case is:
+ *
+ *   - A journey nobody arrives for is escalated up to 24 hours late.
+ *   - Location breadcrumbs survive up to 24 hours past `retention_expires_at`.
+ *     The data-minimisation promise in the UI is a promise about the row being
+ *     gone, and on this schedule it is gone late.
+ *
+ * That is a materially weaker guarantee than the app's copy implies, and it is
+ * a plan limitation rather than a design choice. On Pro, change the schedule in
+ * vercel.json to a 15-minute cron expression and both windows drop to 15
+ * minutes. Nothing in the code needs to change; the sweep is already safe to
+ * run often because `dispatchSosAlert` claims each row with a single
+ * conditional UPDATE.
+ *
+ * Until then, the route can be triggered by hand to close the gap after a real
+ * emergency, which is why the Bearer check below accepts a manually pasted
+ * token. That is deliberate: an operator holding the secret should be able to
+ * run the sweep immediately rather than wait for 03:00.
+ */
+
+/**
  * Backstop sweep for alerts whose owning request never finished dispatching.
  *
  * The request path in `POST /api/sos` holds open through the cancel window and

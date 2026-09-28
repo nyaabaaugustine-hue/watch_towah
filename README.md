@@ -58,14 +58,32 @@ deployment's connection limit.
 
 ## Scheduled work
 
-`/api/cron/dispatch-sos` runs one safety sweep on a schedule (`vercel.json`,
-every 15 minutes). It pages guardians for journeys nobody arrived for, retries
-alerts whose dispatch never completed, and deletes expired location breadcrumbs,
-login codes, and stale throttle rows.
+`/api/cron/dispatch-sos` runs one safety sweep. It pages guardians for journeys
+nobody arrived for, retries alerts whose dispatch never completed, and deletes
+expired location breadcrumbs, login codes, and stale throttle rows.
+
+> **The schedule is a plan limitation, and it weakens the app's promises.**
+> Vercel's Hobby plan allows cron jobs only once per day, so `vercel.json` is set
+> to `0 3 * * *`. Two guarantees are consequently looser than the rest of the app
+> suggests:
+>
+> - A journey nobody arrives for is escalated **up to 24 hours late**, not within
+>   the grace period the dashboard displays.
+> - Location breadcrumbs are deleted **up to 24 hours after** their
+>   `retention_expires_at`. The deletion claim in the privacy copy is about rows
+>   being *gone*; on this schedule they are gone late.
+>
+> On Pro, set the schedule to `*/15 * * * *` and both windows drop to 15 minutes.
+> No code changes are needed — the sweep is already safe to run frequently
+> because `dispatchSosAlert` claims each row with a single conditional UPDATE.
+
+Because the window is wide on Hobby, the endpoint accepts a manually pasted
+token so an operator can close the gap during a real incident instead of waiting
+for 03:00.
 
 Vercel calls it with `Authorization: Bearer $CRON_SECRET`. The route refuses to
 run without that secret rather than exposing an endpoint that can page somebody's
-family on demand. Local testing:
+family on demand. Local testing, and an out-of-band run in production:
 
 ```bash
 curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/dispatch-sos
