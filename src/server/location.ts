@@ -559,7 +559,7 @@ export const sweepExpiredLocationPings = async (db: Database, limit = 500): Prom
     .delete(locationPings)
     .where(
       and(
-        inArray(locationPings.id, stale.map((row) => row.id)),
+        inArray(locationPings.id, stale.map((row: { id: string }) => row.id)),
         sql`${locationPings.retentionExpiresAt} <= ${now}`,
       ),
     )

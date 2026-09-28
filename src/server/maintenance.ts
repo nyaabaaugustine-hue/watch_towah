@@ -142,7 +142,7 @@ export const sweepExpiredOtpCodes = async (db: Database, limit = SWEEP_BATCH): P
     .delete(otpCodes)
     .where(
       and(
-        inArray(otpCodes.id, rows.map((row) => row.id)),
+        inArray(otpCodes.id, rows.map((row: { id: string }) => row.id)),
         or(lt(otpCodes.expiresAt, now), and(isNotNull(otpCodes.consumedAt), lt(otpCodes.consumedAt, cutoff))),
       ),
     )
@@ -175,7 +175,7 @@ export const sweepStaleAuthThrottle = async (db: Database, limit = SWEEP_BATCH):
     .delete(authThrottle)
     .where(
       and(
-        inArray(authThrottle.key, rows.map((row) => row.key)),
+        inArray(authThrottle.key, rows.map((row: { key: string }) => row.key)),
         lt(authThrottle.updatedAt, cutoff),
         or(isNull(authThrottle.lockedUntil), lt(authThrottle.lockedUntil, now)),
       ),

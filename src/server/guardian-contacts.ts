@@ -24,12 +24,12 @@ export const guardianContactInputSchema = z.object({
 
 export type GuardianContactInput = z.infer<typeof guardianContactInputSchema>;
 
-export const listGuardianContacts = (db: Database, userId: string) =>
+export const listGuardianContacts = async (db: Database, userId: string) =>
   db
     .select()
     .from(guardianContacts)
     .where(eq(guardianContacts.userId, userId))
-    .orderBy(asc(guardianContacts.createdAt));
+    .orderBy(asc(guardianContacts.createdAt)) as Promise<{ id: string; name: string; phone: string; relationship: string; permissionLevel: "always_on" | "emergency_only"; contactUserId: string | null; canViewGuardianCircle: boolean; createdAt: Date; userId: string }[]>;
 
 /**
  * Load a contact, proving it belongs to `userId`.
@@ -211,7 +211,7 @@ export const removeGuardianContact = async (
  * also the last to learn their relative is in danger, which is precisely
  * backwards.
  */
-export const resolveEmergencyRecipients = (db: Database, userId: string) =>
+export const resolveEmergencyRecipients = async (db: Database, userId: string) =>
   db
     .select({
       id: guardianContacts.id,
@@ -221,7 +221,7 @@ export const resolveEmergencyRecipients = (db: Database, userId: string) =>
       permissionLevel: guardianContacts.permissionLevel,
     })
     .from(guardianContacts)
-    .where(eq(guardianContacts.userId, userId));
+    .where(eq(guardianContacts.userId, userId)) as Promise<{ id: string; name: string; phone: string; contactUserId: string | null; permissionLevel: "always_on" | "emergency_only" }[]>;
 
 /** Recipients permitted to see routine (non-emergency) location updates. */
 export const resolveRoutineViewers = async (db: Database, userId: string) => {
