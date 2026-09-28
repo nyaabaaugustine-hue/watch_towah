@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local agent tooling and working notes
+.opencode/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

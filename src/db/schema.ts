@@ -12,6 +12,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 /* -------------------------------------------------------------------------- */
 /*                                  Enums                                      */
@@ -194,14 +195,34 @@ export const locationPings = pgTable(
     /** Which capture path produced this ping (manual, journey, sos, ...). */
     source: varchar("source", { length: 24 }).notNull().default("background"),
     recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Device-generated UUID, stable across retries of the same reading.
+     *
+     * A mobile client that loses the response to a POST cannot know whether the
+     * row landed, so it retries. Without a key the retry inserts a second
+     * breadcrumb at the same instant, which draws a zero-length line segment and
+     * makes a stationary user look like they are jittering across the map. The
+     * unique index below turns the retry into a no-op.
+     *
+     * Nullable because server-side writers (SOS capture, seeding) have no
+     * client-generated id; Postgres permits many NULLs in a unique index.
+     */
+    clientId: uuid("client_id"),
     /** Data-minimisation deadline; background job hard-deletes past this. */
     retentionExpiresAt: timestamp("retention_expires_at", { withTimezone: true }).notNull(),
   },
   (table) => [
     index("location_pings_user_recorded_idx").on(table.userId, table.recordedAt),
     index("location_pings_retention_idx").on(table.retentionExpiresAt),
+    // Partial, so it only applies to the pings that actually carry a client key
+    // and can never collide on the NULLs left by server-side writers.
+    uniqueIndex("location_pings_user_client_key")
+      .on(table.userId, table.clientId)
+      .where(sql`${table.clientId} is not null`),
   ],
 );
+
+export type LocationPing = typeof locationPings.$inferSelect;
 
 /* -------------------------------------------------------------------------- */
 /*                                   SOS                                       */
@@ -238,6 +259,24 @@ export const sosAlerts = pgTable(
     index("sos_alerts_user_triggered_idx").on(table.userId, table.triggeredAt),
     index("sos_alerts_status_idx").on(table.status),
     uniqueIndex("sos_alerts_share_token_key").on(table.shareToken),
+    /**
+     * At most one live alert per person, enforced by the database rather than by
+     * the read-then-insert in `createSosAlert`.
+     *
+     * That check was the only thing standing between a double tap and two full
+     * SMS broadcasts to somebody's family, and two concurrent requests could
+     * both read "no live alert" before either wrote. A partial unique index
+     * makes the second insert fail at the storage layer, so the guarantee holds
+     * no matter how many clients press at once.
+     *
+     * `acknowledged` counts as live on purpose: somebody looking at the tracking
+     * page does not mean the emergency is over. A resolved or cancelled alert
+     * falls outside the predicate, so a second press after closing the first is
+     * allowed.
+     */
+    uniqueIndex("sos_alerts_one_live_per_user")
+      .on(table.userId)
+      .where(sql`${table.status} in ('triggered', 'dispatching', 'active', 'acknowledged')`),
   ],
 );
 

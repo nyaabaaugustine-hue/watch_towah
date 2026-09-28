@@ -67,25 +67,73 @@ export const assertNotThrottled = async (db: Database, kind: string, identifier:
   }
 };
 
-export const recordAuthFailure = async (db: Database, kind: string, identifier: string): Promise<void> => {
+/**
+ * Count one attempt against a key and refuse it if the budget is already spent.
+ *
+ * Check-then-count was the bug this replaces: `assertNotThrottled` read the
+ * lockout, the caller did its work, and only then did `recordAuthFailure`
+ * increment. A burst of parallel submissions therefore all passed the check
+ * before any of them recorded anything, so the five-attempt budget bounded a
+ * sequential attacker but not a concurrent one.
+ *
+ * Counting first and checking in the same statement closes that window. The
+ * upsert is serialised on the row, so N simultaneous callers receive N distinct
+ * counts and exactly the first `MAX_FAILURES` of them proceed. A success calls
+ * `clearAuthFailures`, which is why charging successful attempts is safe.
+ *
+ * @param buildMessage Lockout copy. Supplied by the caller because a limit on
+ *   how many codes may be *sent* should not describe failed attempts.
+ * @throws RateLimitError when this attempt exceeds the budget.
+ */
+export const consumeAuthAttempt = async (
+  db: Database,
+  kind: string,
+  identifier: string,
+  buildMessage: (minutes: number) => string = (minutes) =>
+    `Too many failed attempts. Try again in ${minutes} minute(s).`,
+): Promise<void> => {
   const key = throttleKey(kind, identifier);
   const now = new Date();
+  const windowStart = new Date(now.getTime() - WINDOW_MS);
+  const lockoutUntil = new Date(now.getTime() + LOCKOUT_MS);
 
-  // One atomic statement: read the current window, and if it has rolled over,
-  // restart the count. Doing this in JS first would race two concurrent
-  // failures into resetting each other's counter.
-  await db
+  // Every SET expression reads the pre-update row, so reusing this fragment in
+  // both the counter and the lockout test compares against the same old value.
+  const failures = sql`CASE WHEN ${authThrottle.windowStartedAt} < ${windowStart} THEN 1 ELSE ${authThrottle.failures} + 1 END`;
+
+  // `::timestamptz` is required, not decorative. Drizzle sends bound values as
+  // untyped parameters, and the neon-http driver does not send a type OID, so
+  // Postgres infers the CASE branches from context. With `THEN $param ELSE NULL`
+  // there is no other branch to infer from, so the branch resolves to text and
+  // the whole statement is rejected with 42804 "column locked_until is of type
+  // timestamp with time zone but expression is of type text". That is the
+  // first statement on every email or phone sign-in, so this failed every
+  // login with an unhelpful "Configuration" error in the browser.
+  const lockoutUntilParam = sql`${lockoutUntil}::timestamptz`;
+
+  const [updated] = await db
     .insert(authThrottle)
     .values({ key, failures: 1, windowStartedAt: now, updatedAt: now })
     .onConflictDoUpdate({
       target: authThrottle.key,
       set: {
-        failures: sql`CASE WHEN ${authThrottle.windowStartedAt} < ${new Date(now.getTime() - WINDOW_MS)} THEN 1 ELSE ${authThrottle.failures} + 1 END`,
-        windowStartedAt: sql`CASE WHEN ${authThrottle.windowStartedAt} < ${new Date(now.getTime() - WINDOW_MS)} THEN ${now} ELSE ${authThrottle.windowStartedAt} END`,
-        lockedUntil: sql`CASE WHEN (CASE WHEN ${authThrottle.windowStartedAt} < ${new Date(now.getTime() - WINDOW_MS)} THEN 1 ELSE ${authThrottle.failures} + 1 END) >= ${MAX_FAILURES} THEN ${new Date(now.getTime() + LOCKOUT_MS)} ELSE NULL END`,
+        failures,
+        windowStartedAt: sql`CASE WHEN ${authThrottle.windowStartedAt} < ${windowStart} THEN ${now}::timestamptz ELSE ${authThrottle.windowStartedAt} END`,
+        lockedUntil: sql`CASE WHEN ${failures} > ${MAX_FAILURES} THEN ${lockoutUntilParam} ELSE NULL END`,
         updatedAt: now,
       },
-    });
+    })
+    .returning({ lockedUntil: authThrottle.lockedUntil });
+
+  const lockedUntil = updated?.lockedUntil;
+  if (lockedUntil === undefined || lockedUntil === null) {
+    return;
+  }
+
+  if (lockedUntil.getTime() > Date.now()) {
+    const retryAfterSeconds = Math.ceil((lockedUntil.getTime() - Date.now()) / 1000);
+    throw new RateLimitError(buildMessage(Math.ceil(retryAfterSeconds / 60)), { retryAfterSeconds });
+  }
 };
 
 export const clearAuthFailures = async (db: Database, kind: string, identifier: string): Promise<void> => {

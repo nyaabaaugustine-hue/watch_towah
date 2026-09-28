@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import { z } from "zod";
@@ -6,27 +6,30 @@ import { z } from "zod";
 import { db } from "@/db";
 import { otpCodes } from "@/db/schema";
 import {
-  assertNotThrottled,
   clearAuthFailures,
+  consumeAuthAttempt,
   hashesMatch,
   hashOtpCode,
   newOtpCode,
-  recordAuthFailure,
 } from "@/lib/auth-throttle";
 import { env } from "@/lib/env";
-import { AuthenticationError } from "@/lib/errors";
 import { normalizeGhanaPhone } from "@/lib/phone";
+import { linkGuardianContactsForPhone } from "@/server/guardian-contacts";
 import { burnPasswordCompare, findUserByEmail, findUserByPhone, verifyPassword } from "@/server/users";
 
 /** An unconsumed code is only good for this long. */
 export const OTP_TTL_MS = 10 * 60 * 1000;
-/**
- * Guess budget for a login code. Enforced indirectly: `issueLoginOtp` consumes
- * any outstanding code before minting a new one, and `recordAuthFailure` locks
- * the phone out after 5 failures. So a given 6-digit code never sees more than
- * 5 submissions before the account is locked.
- */
 
+/**
+ * Guesses tolerated against a single issued code.
+ *
+ * `otp_codes.attempts` is the per-code budget the schema documents. It used to
+ * be read by the consume predicate but never written, so the test was always
+ * `0 = 0` and the column enforced nothing. The phone-level throttle in
+ * `consumeAuthAttempt` is a separate, coarser limit: it resets whenever a new
+ * code is issued, so on its own it does not bound guesses against one code.
+ */
+const MAX_OTP_ATTEMPTS = 5;
 const emailCredentialsSchema = z.object({
   email: z.string().min(1, "Enter your email address.").email("That does not look like an email address."),
   password: z.string().min(1, "Enter your password."),
@@ -62,19 +65,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         }
 
         const email = parsed.data.email.toLowerCase();
-        await assertNotThrottled(db, "email", email);
+        // Charged before the comparison, not after a failure. Counting afterwards
+        // let a parallel burst of submissions all pass the lockout check before
+        // any of them recorded a failure.
+        await consumeAuthAttempt(db, "email", email);
 
         const found = await findUserByEmail(db, email);
         const user = found[0];
         if (user === undefined || user.passwordHash === null) {
+          // Spend the same work either way, so a missing account and a wrong
+          // password take indistinguishable time.
           await burnPasswordCompare(parsed.data.password);
-          await recordAuthFailure(db, "email", email);
           return null;
         }
 
         const passwordOk = await verifyPassword(parsed.data.password, user.passwordHash);
         if (!passwordOk) {
-          await recordAuthFailure(db, "email", email);
           return null;
         }
 
@@ -97,44 +103,60 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         const phone = normalizeGhanaPhone(parsed.data.phone, "phone");
         const code = parsed.data.code.trim();
-        await assertNotThrottled(db, "phone", phone);
+        await consumeAuthAttempt(db, "phone", phone);
 
-        const candidates = await db
-          .select()
+        // The account is resolved from the phone rather than from a code-hash
+        // match, because a guess has to be charged against the outstanding code
+        // row and that row can only be found once the owner is known. An unknown
+        // number returns null through exactly the same path as a wrong guess, so
+        // this endpoint cannot be used to discover which numbers are registered.
+        const found = await findUserByPhone(db, phone);
+        const user = found[0];
+        if (user === undefined) {
+          return null;
+        }
+
+        const now = new Date();
+        const [match] = await db
+          .select({ id: otpCodes.id, codeHash: otpCodes.codeHash, attempts: otpCodes.attempts })
           .from(otpCodes)
           .where(
             and(
-              eq(otpCodes.codeHash, hashOtpCode(phone, "login", code)),
+              eq(otpCodes.userId, user.id),
               eq(otpCodes.purpose, "login"),
               isNull(otpCodes.consumedAt),
-              gt(otpCodes.expiresAt, new Date()),
+              gt(otpCodes.expiresAt, now),
             ),
           )
           .limit(1);
 
-        const match = candidates[0];
-        if (match === undefined || !hashesMatch(match.codeHash, hashOtpCode(phone, "login", code))) {
-          await recordAuthFailure(db, "phone", phone);
+        if (match === undefined || match.attempts >= MAX_OTP_ATTEMPTS) {
           return null;
         }
 
-        const found = await findUserByPhone(db, phone);
-        const user = found[0];
-        if (user === undefined) {
-          throw new AuthenticationError("No account exists for that phone number.", { phone });
+        if (!hashesMatch(match.codeHash, hashOtpCode(phone, "login", code))) {
+          await db
+            .update(otpCodes)
+            .set({ attempts: sql`${otpCodes.attempts} + 1` })
+            .where(and(eq(otpCodes.id, match.id), isNull(otpCodes.consumedAt)));
+          return null;
         }
 
-        // Burn the code inside the same transaction that verifies it, so two
+        // Burn the code inside the same statement that verifies it, so two
         // parallel requests with the same code cannot both succeed.
         const consumed = await db
           .update(otpCodes)
-          .set({ consumedAt: new Date() })
+          .set({ consumedAt: now })
           .where(and(eq(otpCodes.id, match.id), isNull(otpCodes.consumedAt), eq(otpCodes.attempts, match.attempts)))
           .returning({ id: otpCodes.id });
 
         if (consumed.length === 0) {
           return null;
         }
+
+        // A guardian is added by phone number long before they have an account,
+        // so this is the moment their contact row gets a user to attach to.
+        await linkGuardianContactsForPhone(db, phone, user.id);
 
         await clearAuthFailures(db, "phone", phone);
         return { id: user.id, email: user.email, name: user.name, image: user.avatarUrl };

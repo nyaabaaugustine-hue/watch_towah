@@ -87,6 +87,32 @@ export class UpstreamError extends WatchtowerError {
 export const isWatchtowerError = (value: unknown): value is WatchtowerError =>
   value instanceof WatchtowerError;
 
+/**
+ * Whether a driver error is Postgres unique-violation `23505`.
+ *
+ * Where a read-then-insert check is the only guard, the database is the real
+ * authority: two concurrent requests can both pass the read, and only the
+ * constraint stops the second write. Callers that rely on such an index need to
+ * recognise its violation and report it as a conflict, otherwise a correctness
+ * guarantee enforced by the schema surfaces to the user as a generic 500.
+ *
+ * Walks `cause` as well because the neon driver wraps the Postgres error one or
+ * two levels down depending on the transport.
+ */
+export const isUniqueViolation = (value: unknown): boolean => {
+  let current: unknown = value;
+
+  for (let depth = 0; depth < 5 && current !== null && current !== undefined; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (code === "23505") {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+
+  return false;
+};
+
 type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
 
 export const toErrorBody = (error: WatchtowerError): ErrorBody => ({

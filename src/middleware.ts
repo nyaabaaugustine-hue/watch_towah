@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import NextAuth from "next-auth";
 
-import { auth } from "@/auth";
+import { authConfig } from "@/auth.config";
 
 /**
  * Paths reachable without a session.
@@ -15,6 +16,13 @@ const PUBLIC_PATHS = ["/sign-in", "/sign-up", "/track"];
 
 const isPublicPath = (pathname: string): boolean =>
   PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+
+/**
+ * A middleware-local Auth.js instance built from the Edge-safe config only.
+ * Importing the full `@/auth` here would drag bcrypt, Drizzle, and
+ * `node:crypto` into the Edge bundle, which fails the build outright.
+ */
+const { auth } = NextAuth(authConfig);
 
 export default auth((request) => {
   if (isPublicPath(request.nextUrl.pathname)) {
@@ -34,8 +42,18 @@ export const config = {
   /**
    * API routes are excluded on purpose: every route handler authenticates its
    * own caller, and a few (SSE streams, location ingest) need finer-grained
-   * checks than "is there a session" anyway. Static assets are excluded so the
-   * service worker and manifest stay reachable while signed out.
+   * checks than "is there a session" anyway.
+   *
+   * Everything with a static file extension is excluded as well, rather than
+   * naming each asset. Listing files individually is how `/icon-192.png` ended
+   * up 307-redirecting to `/sign-in`: the old pattern excluded a path *segment*
+   * called `icons`, which does not match an icon file sitting at the root. A
+   * PWA whose manifest points at a manifest-guarded icon has a broken home
+   * screen, and the service worker's precache of `/icon-192.png` would store a
+   * redirect. Pages in this app have no extension, so this cannot over-match a
+   * route, and any asset added to `public/` later is public by default.
    */
-  matcher: ["/((?!api|_next/static|_next/image|icons|favicon.ico|manifest.webmanifest|sw.js|offline).*)"],
+  matcher: [
+    "/((?!api|_next/static|_next/image|offline|.*\\.(?:svg|png|jpe?g|gif|webp|avif|ico|webmanifest|js|mjs|css|map|txt|xml|json|woff2?)$).*)",
+  ],
 };

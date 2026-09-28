@@ -1,36 +1,125 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Watchtower
 
-## Getting Started
+A low-data personal-safety web app for Ghana. SOS alerting, live location
+sharing, journey (dead-man) monitoring, and a Guardian Circle of people who get
+contacted when something goes wrong.
 
-First, run the development server:
+Built as a PWA so it installs to a phone home screen and keeps working on a weak
+connection.
+
+## Stack
+
+| Concern | Choice |
+| --- | --- |
+| Framework | Next.js 15 (App Router), React 19 |
+| Language | TypeScript, strict |
+| Database | Neon Postgres via Drizzle ORM |
+| Auth | Auth.js v5, JWT sessions, email+password and phone OTP |
+| Styling | Tailwind CSS |
+| Push | Web Push (VAPID) |
+| SMS | Africa's Talking |
+| Maps | Mapbox GL JS |
+
+## Getting started
 
 ```bash
+npm install
+cp .env.example .env.local   # then fill in the placeholders
+npm run db:push              # create the schema
+npm run db:seed              # development data only
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The seed creates a development account: `amma@watchtower.test` /
+`WatchtowerDev1!`. It is a fixed, published password, which is why `db:seed`
+refuses to run against a remote database unless you set
+`WATCHTOWER_ALLOW_SEED=1`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Environment
 
-## Learn More
+`src/lib/env.ts` validates every variable at boot and fails loudly rather than
+starting a half-working app. `.env.example` is filled with placeholders that
+satisfy that validation, so a fresh clone boots and individual features fail at
+call time until you supply real credentials.
 
-To learn more about Next.js, take a look at the following resources:
+One trap worth knowing: to disable the optional `CRON_SECRET`, **delete the
+line**, do not set it to `""`. An empty string is not "unset" as far as the schema
+is concerned, so `CRON_SECRET=""` fails its minimum-length check and takes the
+whole app down.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Database URL
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Use Neon's **pooled** URL (the one ending in `-pooler.<region>.aws.neon.tech`).
+`src/db/index.ts` uses the `neon-http` driver, which expects the pooled
+endpoint; pointing it at the direct connection is what exhausts a serverless
+deployment's connection limit.
 
-## Deploy on Vercel
+## Scheduled work
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+`/api/cron/dispatch-sos` runs one safety sweep on a schedule (`vercel.json`,
+every 15 minutes). It pages guardians for journeys nobody arrived for, retries
+alerts whose dispatch never completed, and deletes expired location breadcrumbs,
+login codes, and stale throttle rows.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Vercel calls it with `Authorization: Bearer $CRON_SECRET`. The route refuses to
+run without that secret rather than exposing an endpoint that can page somebody's
+family on demand. Local testing:
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/dispatch-sos
+```
+
+The scheme prefix is matched case-insensitively; a bare token with no scheme also
+works. Anything else returns 403.
+
+## Scripts
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Development server |
+| `npm run build` | Production build |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run lint` | ESLint |
+| `npm run test` | Fails: no test runner is configured yet |
+| `npm run db:generate` | Generate a migration from schema changes |
+| `npm run db:push` | Apply schema directly (development) |
+| `npm run db:seed` | Seed development data |
+| `npm run keygen:vapid` | Generate a Web Push key pair |
+| `npm run verify:data` | Print the rows the UI's claims are derived from |
+
+`npm test` deliberately exits non-zero. There is no test suite yet, and a script
+that silently succeeds when it has checked nothing is worse than an honest
+failure.
+
+## Architecture notes
+
+- **Server modules in `src/server/*` are the only writers.** Client components
+  call actions and API routes; they never touch Drizzle.
+- **SOS truth is `countNotifiedGuardians`.** It counts `alert_deliveries` rows
+  with `status = 'sent'`. There is no `notified_at` column, and the UI does not
+  imply otherwise.
+- **State is derived, never computed in the browser from a stale copy.** A phone
+  that has been offline for an hour must still show the truth, so every status is
+  read from stored data.
+- **Location pings are idempotent.** Each reading carries a device-generated
+  `clientId` with a partial unique index, so a retry after a lost response
+  returns the original row instead of writing a duplicate breadcrumb.
+- **Retention is enforced in application code.** Location breadcrumbs carry a
+  `retention_expires_at` deadline and are hard-deleted by the safety sweep. This
+  used to depend on a `pg_cron` job in the initial migration that was never
+  registered, which meant breadcrumbs were kept indefinitely.
+
+## Status
+
+Feature-complete enough to walk the primary flows: sign-up, Guardian Circle, SOS,
+journeys, location sharing, and offline queueing.
+
+Not finished, and not stubbed to look otherwise: Evidence Vault media handling,
+Missing Person mode, incident timeline UI, safety zones UI, and guardian-side
+circle viewing.
+
+Real SMS, Web Push, and Mapbox delivery are untested because those credentials
+are placeholders. Every delivery attempt against the seeded data currently fails
+at the provider.

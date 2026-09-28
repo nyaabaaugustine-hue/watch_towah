@@ -64,11 +64,18 @@ export const createUser = async (
     throw new ValidationError("An email address or phone number is required to create an account.");
   }
 
-  if (input.email !== null && input.phone !== null) {
+  // Each supplied identifier is checked independently. Checking them only when
+  // BOTH are present would let an email-only signup collide with an existing
+  // account, and the unique index would then reject the insert with a raw
+  // driver error instead of a field-level message the form can render.
+  if (input.email !== null) {
     const emailTaken = await findUserByEmail(db, input.email);
     if (emailTaken[0] !== undefined) {
       throw new ConflictError("An account already uses that email address.", { field: "email" });
     }
+  }
+
+  if (input.phone !== null) {
     const phoneTaken = await findUserByPhone(db, input.phone);
     if (phoneTaken[0] !== undefined) {
       throw new ConflictError("An account already uses that phone number.", { field: "phone" });
@@ -121,3 +128,53 @@ export const getOrCreateUserSettings = async (db: Database, userId: string) => {
 
 export const normalizeUserPhone = (raw: string, fieldName: string): string =>
   normalizeGhanaPhone(raw, fieldName);
+
+export type UserSettingsRow = typeof userSettings.$inferSelect;
+
+/**
+ * Only the fields the settings screen owns. `userId` is deliberately absent: it
+ * is the row's identity, not a value anybody gets to change, and accepting it
+ * here would be the kind of field that ends up in a spread of request data.
+ */
+export type UserSettingsPatch = Pick<
+  UserSettingsRow,
+  | "lowDataMode"
+  | "batterySaver"
+  | "backgroundIntervalSeconds"
+  | "activeIntervalSeconds"
+  | "smsFallbackEnabled"
+  | "smsOnly"
+  | "shareLocationByDefault"
+  | "locationRetentionDays"
+>;
+
+/**
+ * Save settings, creating the row if this is the user's first visit.
+ *
+ * The update is scoped by `userId` in the `where`, not merely in the preceding
+ * `getOrCreateUserSettings` read. Those are different guarantees: the read proves
+ * a row existed at one moment, while the clause here is what actually confines
+ * the write to the caller's own row.
+ */
+export const updateUserSettings = async (
+  db: Database,
+  userId: string,
+  patch: UserSettingsPatch,
+): Promise<UserSettingsRow> => {
+  // Guarantees the row exists so the `returning` below yields a value, and so a
+  // user who has never opened settings still gets one instead of a silent no-op.
+  await getOrCreateUserSettings(db, userId);
+
+  const updated = await db
+    .update(userSettings)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(userSettings.userId, userId))
+    .returning();
+
+  const row = updated[0];
+  if (row === undefined) {
+    throw new Error("Settings update returned no row for an existing user.");
+  }
+  return row;
+};
+

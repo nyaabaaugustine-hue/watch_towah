@@ -37,8 +37,16 @@ const AppLayout = async ({ children }: { children: React.ReactNode }) => {
   }
 
   return (
+    /*
+     * `pb-24` clears the sticky bottom nav rather than living in each page. A
+     * sticky nav occupies space in flow but still overlays whatever is scrolled
+     * behind it, so without this the last control on a long page — the journey
+     * form's submit button, most dangerously — sits permanently under the nav
+     * and cannot be tapped. Centralised here because a per-page `pb-*` is a
+     * value every future page has to remember to get right.
+     */
     <div className="app-shell flex min-h-dvh flex-col">
-      <div className="flex-1">{children}</div>
+      <div className="flex-1 pb-24">{children}</div>
       <BottomNav />
     </div>
   );

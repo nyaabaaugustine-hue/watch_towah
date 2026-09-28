@@ -1,10 +1,18 @@
 -- Watchtower initial schema.
 --
--- pg_cron backs the location-retention sweep. The extension must be enabled
--- before the schedule is registered, and it can only be created outside a
--- transaction block on Neon, so it is prepended here rather than emitted by
--- `drizzle-kit generate` (which does not manage extensions).
-CREATE EXTENSION IF NOT EXISTS pg_cron;
+-- No pg_cron here, deliberately. The location-retention sweep used to be
+-- registered from this file, and it never ran for two independent reasons.
+-- This project creates its schema with `drizzle-kit push`, which executes no
+-- migration-file SQL at all, so the job was never registered. Had `migrate` been
+-- used instead, it would have failed on its first statement: Neon only permits
+-- `CREATE EXTENSION pg_cron` in the `postgres` database, not the application
+-- database, and because drizzle wraps a migration in a transaction that failure
+-- rolls the whole schema back. And even when it did load, pg_cron only fires
+-- while a compute is awake, which is not something a location-retention promise
+-- should depend on.
+--
+-- Retention is now enforced in application code by `sweepExpiredLocationPings`,
+-- driven from the Vercel cron the app already registers.
 CREATE TYPE "public"."alert_channel" AS ENUM('push', 'sms');--> statement-breakpoint
 CREATE TYPE "public"."checkin_status" AS ENUM('scheduled', 'responded', 'missed', 'cancelled');--> statement-breakpoint
 CREATE TYPE "public"."delivery_status" AS ENUM('pending', 'sent', 'delivered', 'failed');--> statement-breakpoint
@@ -301,11 +309,3 @@ CREATE UNIQUE INDEX "sos_alerts_share_token_key" ON "sos_alerts" USING btree ("s
 CREATE UNIQUE INDEX "users_email_key" ON "users" USING btree ("email");--> statement-breakpoint
 CREATE UNIQUE INDEX "users_phone_key" ON "users" USING btree ("phone");--> statement-breakpoint
 CREATE INDEX "zone_events_user_occurred_idx" ON "zone_events" USING btree ("user_id","occurred_at");
--- Statement-breakpoint
--- Enforce the data-minimisation promise: location breadcrumbs are hard-deleted
--- once their retention deadline passes, whether or not a client ever reconnects.
-SELECT cron.schedule(
-  'watchtower-retention',
-  '*/15 * * * *',
-  'DELETE FROM location_pings WHERE "retention_expires_at" < now()'
-);

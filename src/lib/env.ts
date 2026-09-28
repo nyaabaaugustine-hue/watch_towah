@@ -22,6 +22,13 @@ const envSchema = z.object({
   EVIDENCE_ENCRYPTION_KEY: z
     .string()
     .min(43, "EVIDENCE_ENCRYPTION_KEY must be a 32-byte key encoded as 44-char base64url"),
+
+  /**
+   * Shared secret for the cron routes. Optional so a fresh checkout boots, but
+   * the sweeps refuse to run without it rather than exposing an endpoint that
+   * can page somebody's family on demand.
+   */
+  CRON_SECRET: z.string().min(16, "CRON_SECRET must be at least 16 characters").optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

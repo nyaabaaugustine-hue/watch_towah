@@ -8,10 +8,15 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio",
+    "db:generate": "node --env-file=.env.local node_modules/drizzle-kit/bin.cjs generate",
+    "db:migrate": "node --env-file=.env.local node_modules/drizzle-kit/bin.cjs migrate",
+    "db:push": "node --env-file=.env.local node_modules/drizzle-kit/bin.cjs push --force",
+    "db:studio": "node --env-file=.env.local node_modules/drizzle-kit/bin.cjs studio",
+    "db:seed": "tsx --env-file=.env.local scripts/seed-dev.ts",
+    "verify:data": "tsx --env-file=.env.local scripts/verify-data.mts",
+    "verify:seed": "tsx --env-file=.env.local scripts/verify-seed.mts",
+    "test": "echo \"No test runner is configured yet.\" && exit 1",
+    "icons": "tsx scripts/generate-icons.ts",
     "keygen:vapid": "tsx scripts/generate-vapid-keys.ts"
   },
   "overrides": {
@@ -22,7 +27,6 @@
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
     "@neondatabase/serverless": "^1.1.0",
-    "@serwist/next": "^9.5.12",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.11.0",
     "clsx": "^2.1.1",

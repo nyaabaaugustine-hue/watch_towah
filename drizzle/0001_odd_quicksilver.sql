@@ -1,0 +1,3 @@
+ALTER TABLE "location_pings" ADD COLUMN "client_id" uuid;--> statement-breakpoint
+CREATE UNIQUE INDEX "location_pings_user_client_key" ON "location_pings" USING btree ("user_id","client_id") WHERE "location_pings"."client_id" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "sos_alerts_one_live_per_user" ON "sos_alerts" USING btree ("user_id") WHERE "sos_alerts"."status" in ('triggered', 'dispatching', 'active', 'acknowledged');
